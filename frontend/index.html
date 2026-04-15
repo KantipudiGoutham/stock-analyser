@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kite Lite - NSE Real-time</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        .flash-green { animation: flash-g 0.5s; }
+        .flash-red { animation: flash-r 0.5s; }
+        @keyframes flash-g { 0% { background-color: rgba(34, 197, 94, 0.5); } }
+        @keyframes flash-r { 0% { background-color: rgba(239, 68, 68, 0.5); } }
+    </style>
+</head>
+<body class="bg-gray-900 text-white font-sans h-screen flex flex-col overflow-hidden">
+
+    <header class="bg-gray-800 p-4 border-b border-gray-700 flex justify-between items-center shadow-md">
+        <h1 class="text-xl font-bold tracking-wider text-blue-400">Kite Lite</h1>
+        <div class="flex gap-4 text-sm font-semibold">
+            <div>NIFTY 50: <span id="nifty-status" class="text-green-400">CONNECTING...</span></div>
+        </div>
+    </header>
+
+    <div class="flex flex-1 overflow-hidden">
+        <aside class="w-80 bg-gray-800 border-r border-gray-700 flex flex-col">
+            <div class="p-3 bg-gray-700 text-xs font-bold uppercase tracking-widest border-b border-gray-600">Market Movers</div>
+            <div class="flex-1 overflow-y-auto" id="watchlist">
+                </div>
+        </aside>
+
+        <main class="flex-1 flex flex-col p-4 gap-4 overflow-y-auto">
+            
+            <div class="bg-gray-800 rounded-lg shadow-lg p-4 h-80 flex flex-col border border-gray-700">
+                <div class="flex justify-between items-center mb-2">
+                    <h2 class="text-xl font-bold" id="chart-title">Select a stock</h2>
+                    <span id="chart-price" class="text-3xl font-mono">--</span>
+                </div>
+                <div class="flex-1 relative">
+                    <canvas id="mainChart"></canvas>
+                </div>
+            </div>
+
+            <div id="analysis-panel" class="hidden bg-gray-800 rounded-lg shadow-lg p-6 border border-gray-700 flex flex-col gap-6">
+                
+                <div class="flex justify-between items-end border-b border-gray-700 pb-4">
+                    <div>
+                        <h2 class="text-2xl font-bold text-blue-400">Quant Analysis Report</h2>
+                        <p id="insight-summary" class="text-gray-400 text-sm mt-1 max-w-2xl"></p>
+                    </div>
+                    <div class="text-right">
+                        <div class="text-xs text-gray-400 uppercase tracking-wide">Health Score</div>
+                        <div class="text-4xl font-bold font-mono" id="health-score-val">--</div>
+                        <div class="text-sm font-bold mt-1 px-2 py-1 rounded" id="health-action">--</div>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div class="bg-gray-900 p-4 rounded border border-gray-700">
+                        <h3 class="text-sm text-gray-400 uppercase mb-3">Price Trends</h3>
+                        <div class="grid grid-cols-2 gap-2 text-sm" id="trend-grid">
+                            </div>
+                    </div>
+
+                    <div class="bg-gray-900 p-4 rounded border border-gray-700">
+                        <h3 class="text-sm text-gray-400 uppercase mb-3">Technicals</h3>
+                        <div class="flex justify-between border-b border-gray-700 pb-2 mb-2">
+                            <span>RSI (14)</span> <span id="ind-rsi" class="font-mono font-bold">--</span>
+                        </div>
+                        <div class="flex justify-between border-b border-gray-700 pb-2 mb-2">
+                            <span>MACD</span> <span id="ind-macd" class="font-mono font-bold">--</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span>SMA 50/200</span> <span id="ind-sma" class="font-mono text-xs">--</span>
+                        </div>
+                    </div>
+
+                    <div class="bg-gray-900 p-4 rounded border border-gray-700">
+                        <h3 class="text-sm text-gray-400 uppercase mb-3">Risk & Setup</h3>
+                        <div class="mb-2">
+                            <span class="text-xs text-gray-500">Risk Level:</span> 
+                            <span id="risk-level" class="ml-2 text-sm font-bold">--</span>
+                        </div>
+                        <ul id="pros-cons-list" class="text-xs space-y-2 mt-3">
+                            </ul>
+                    </div>
+                </div>
+            </div>
+
+            <div class="bg-gray-800 rounded-lg shadow-lg p-4 border border-gray-700">
+                <h2 class="text-lg font-bold mb-4">Market Heatmap (NSE Universe)</h2>
+                <div id="heatmap" class="grid grid-cols-2 md:grid-cols-5 gap-3"></div>
+            </div>
+
+        </main>
+    </div>
+
+    <script>
+        const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+        const ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws/market`);
+        let selectedStock = "RELIANCE.NS";
+        let chartInstance = null;
+        let analysisRequestToken = 0;
+        const maxChartPoints = 60; // 60 seconds of history
+        const analysisPanel = document.getElementById('analysis-panel');
+
+        // Initialize Chart.js
+        const ctx = document.getElementById('mainChart').getContext('2d');
+        chartInstance = new Chart(ctx, {
+            type: 'line',
+            data: { labels: [], datasets: [{ label: 'Live Price', data: [], borderColor: '#3b82f6', tension: 0.1, borderWidth: 2, pointRadius: 0 }] },
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                plugins: { legend: { display: false } },
+                scales: { 
+                    x: { display: false }, 
+                    y: { grid: { color: '#374151' }, ticks: { color: '#9ca3af', font: {family: 'monospace'} } } 
+                },
+                animation: { duration: 0 } // Disable animation for real-time performance
+            }
+        });
+
+        // Handle incoming WebSocket data
+        ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            document.getElementById('nifty-status').innerText = "LIVE 🟢";
+            
+            updateWatchlist(data);
+            updateHeatmap(data);
+            updateChart(data);
+        };
+
+        ws.onerror = () => {
+            document.getElementById('nifty-status').innerText = "DISCONNECTED";
+        };
+
+        function updateWatchlist(data) {
+            // Sort by change percentage (descending)
+            const sortedStocks = Object.values(data).sort((a, b) => b.change_pct - a.change_pct);
+            const container = document.getElementById('watchlist');
+            
+            container.innerHTML = sortedStocks.map(stock => {
+                const isPositive = stock.change_pct >= 0;
+                const colorClass = isPositive ? 'text-green-400' : 'text-red-400';
+                return `
+                    <div class="p-3 border-b border-gray-700 flex justify-between items-center hover:bg-gray-700 cursor-pointer transition-colors" onclick="selectStock('${stock.ticker}')">
+                        <div>
+                            <div class="font-bold text-sm">${stock.ticker.replace('.NS', '')}</div>
+                            <div class="text-xs text-gray-400">Vol: ${stock.volume.toLocaleString()}</div>
+                        </div>
+                        <div class="text-right">
+                            <div class="font-mono text-sm">${stock.price.toFixed(2)}</div>
+                            <div class="text-xs ${colorClass}">${isPositive ? '+' : ''}${stock.change_pct.toFixed(2)}%</div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function updateHeatmap(data) {
+            const container = document.getElementById('heatmap');
+            container.innerHTML = Object.values(data).map(stock => {
+                const isPositive = stock.change_pct >= 0;
+                // Calculate opacity based on intensity of move (max out at 2% for visual effect)
+                const intensity = Math.min(Math.abs(stock.change_pct) / 2, 1);
+                const bgClass = isPositive ? `rgba(34, 197, 94, ${intensity + 0.1})` : `rgba(239, 68, 68, ${intensity + 0.1})`;
+                const borderClass = isPositive ? 'border-green-500' : 'border-red-500';
+
+                return `
+                    <div class="p-4 rounded shadow-sm border ${borderClass} flex flex-col items-center justify-center cursor-pointer hover:scale-105 transition-transform" 
+                         style="background-color: ${bgClass};" onclick="selectStock('${stock.ticker}')">
+                        <span class="font-bold text-sm">${stock.ticker.replace('.NS', '')}</span>
+                        <span class="font-mono text-lg">${stock.price.toFixed(2)}</span>
+                        <span class="text-xs">${stock.change_pct.toFixed(2)}%</span>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        async function selectStock(ticker) {
+            selectedStock = ticker;
+            chartInstance.data.labels = [];
+            chartInstance.data.datasets[0].data = [];
+            document.getElementById('chart-title').innerText = ticker.replace('.NS', '');
+            
+            // Show loading state for analysis
+            document.getElementById('analysis-panel').classList.remove('hidden');
+            document.getElementById('insight-summary').innerText = "Running quantitative models...";
+            
+            try {
+                const response = await fetch(`${window.location.origin}/api/analysis/${encodeURIComponent(ticker)}`);
+                if (!response.ok) throw new Error("Data unavailable");
+                const data = await response.json();
+                
+                // Update Health Score
+                const scoreEl = document.getElementById('health-score-val');
+                scoreEl.innerText = data.health.score;
+                scoreEl.className = `text-4xl font-bold font-mono text-${data.health.color}-400`;
+                
+                const actionEl = document.getElementById('health-action');
+                actionEl.innerText = data.health.action;
+                actionEl.className = `text-sm font-bold mt-1 px-2 py-1 rounded bg-${data.health.color}-900 text-${data.health.color}-400 inline-block`;
+
+                // Update Summary
+                document.getElementById('insight-summary').innerText = data.insights.summary;
+
+                // Update Risk
+                const riskEl = document.getElementById('risk-level');
+                riskEl.innerText = data.insights.risk_level;
+                riskEl.className = `ml-2 text-sm font-bold ${data.insights.risk_level === 'High' ? 'text-red-400' : 'text-green-400'}`;
+
+                // Update Trends
+                const trendGrid = document.getElementById('trend-grid');
+                trendGrid.innerHTML = Object.entries(data.trends).map(([tf, val]) => `
+                    <div class="flex justify-between">
+                        <span class="text-gray-500 uppercase">${tf}</span>
+                        <span class="${val >= 0 ? 'text-green-400' : 'text-red-400'} font-mono">${val > 0 ? '+' : ''}${val.toFixed(2)}%</span>
+                    </div>
+                `).join('');
+
+                // Update Indicators
+                document.getElementById('ind-rsi').innerText = data.indicators.rsi;
+                document.getElementById('ind-rsi').className = `font-mono font-bold ${data.indicators.rsi > 70 ? 'text-red-400' : data.indicators.rsi < 30 ? 'text-green-400' : 'text-white'}`;
+                document.getElementById('ind-macd').innerText = data.indicators.macd;
+                document.getElementById('ind-sma').innerText = `${data.indicators.sma50} / ${data.indicators.sma200}`;
+
+                // Update Pros/Cons
+                const prosCons = document.getElementById('pros-cons-list');
+                prosCons.innerHTML = data.insights.pros.map(p => `<li class="text-green-400 flex"><span class="mr-2">✓</span> ${p}</li>`).join('') +
+                                     data.insights.cons.map(c => `<li class="text-red-400 flex"><span class="mr-2">✗</span> ${c}</li>`).join('');
+
+            } catch (error) {
+                document.getElementById('insight-summary').innerText = "Historical data for analysis currently unavailable.";
+            }
+        }
+
+        function updateChart(data) {
+            if (!data[selectedStock]) return;
+            
+            const stockData = data[selectedStock];
+            const timeNow = new Date().toLocaleTimeString();
+
+            document.getElementById('chart-title').innerText = selectedStock.replace('.NS', '');
+            
+            const priceEl = document.getElementById('chart-price');
+            const oldPrice = parseFloat(priceEl.innerText);
+            priceEl.innerText = `₹${stockData.price.toFixed(2)}`;
+            
+            // Flash effect on price change
+            if (!isNaN(oldPrice) && oldPrice !== stockData.price) {
+                priceEl.className = `text-3xl font-mono ${stockData.price > oldPrice ? 'text-green-400 flash-green' : 'text-red-400 flash-red'}`;
+                setTimeout(() => priceEl.className = 'text-3xl font-mono', 500);
+            }
+
+            // Push new data point to chart
+            chartInstance.data.labels.push(timeNow);
+            chartInstance.data.datasets[0].data.push(stockData.price);
+
+            // Shift if exceeding max points
+            if (chartInstance.data.labels.length > maxChartPoints) {
+                chartInstance.data.labels.shift();
+                chartInstance.data.datasets[0].data.shift();
+            }
+
+            chartInstance.update();
+        }
+
+        async function loadAnalysis(ticker) {
+            const requestToken = ++analysisRequestToken;
+
+            try {
+                const response = await fetch(`/api/analysis/${encodeURIComponent(ticker)}`);
+                const result = await response.json();
+
+                if (requestToken !== analysisRequestToken) return;
+
+                if (!response.ok) {
+                    throw new Error(result.detail || 'Analysis request failed');
+                }
+
+                renderAnalysis(result);
+            } catch (error) {
+                if (requestToken !== analysisRequestToken) return;
+                renderAnalysisError(error);
+            }
+        }
+
+        function setAnalysisLoadingState(ticker) {
+            analysisPanel.classList.remove('hidden');
+            document.getElementById('insight-summary').innerText = `Loading analysis for ${ticker.replace('.NS', '')}...`;
+            document.getElementById('health-score-val').innerText = '--';
+            document.getElementById('health-action').innerText = '--';
+            document.getElementById('health-action').className = 'text-sm font-bold mt-1 px-2 py-1 rounded bg-gray-700 text-gray-300';
+            document.getElementById('trend-grid').innerHTML = '';
+            document.getElementById('ind-rsi').innerText = '--';
+            document.getElementById('ind-macd').innerText = '--';
+            document.getElementById('ind-sma').innerText = '--';
+            document.getElementById('risk-level').innerText = '--';
+            document.getElementById('risk-level').className = 'ml-2 text-sm font-bold';
+            document.getElementById('pros-cons-list').innerHTML = '<li class="text-gray-400">Building report...</li>';
+        }
+
+        function renderAnalysis(report) {
+            const healthColorMap = {
+                green: 'text-green-400',
+                yellow: 'text-yellow-400',
+                red: 'text-red-400'
+            };
+            const healthBadgeMap = {
+                green: 'bg-green-500/20 text-green-300',
+                yellow: 'bg-yellow-500/20 text-yellow-300',
+                red: 'bg-red-500/20 text-red-300'
+            };
+            const riskColorMap = {
+                Low: 'text-green-400',
+                Medium: 'text-yellow-400',
+                High: 'text-red-400'
+            };
+
+            analysisPanel.classList.remove('hidden');
+            document.getElementById('insight-summary').innerText = report.insights.summary;
+
+            const scoreEl = document.getElementById('health-score-val');
+            scoreEl.innerText = report.health.score;
+            scoreEl.className = `text-4xl font-bold font-mono ${healthColorMap[report.health.color] || 'text-white'}`;
+
+            const actionEl = document.getElementById('health-action');
+            actionEl.innerText = `${report.health.action} • ${report.health.label}`;
+            actionEl.className = `text-sm font-bold mt-1 px-2 py-1 rounded ${healthBadgeMap[report.health.color] || 'bg-gray-700 text-gray-200'}`;
+
+            document.getElementById('trend-grid').innerHTML = Object.entries(report.trends).map(([label, value]) => {
+                const positive = value >= 0;
+                return `
+                    <div class="rounded border border-gray-700 bg-gray-800 px-3 py-2">
+                        <div class="text-xs uppercase text-gray-400">${label}</div>
+                        <div class="font-mono font-bold ${positive ? 'text-green-400' : 'text-red-400'}">
+                            ${positive ? '+' : ''}${value.toFixed(2)}%
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            document.getElementById('ind-rsi').innerText = report.indicators.rsi.toFixed(2);
+            document.getElementById('ind-macd').innerText = report.indicators.macd.toFixed(2);
+            document.getElementById('ind-sma').innerText = `${report.indicators.sma50.toFixed(2)} / ${report.indicators.sma200.toFixed(2)}`;
+
+            const riskLevelEl = document.getElementById('risk-level');
+            riskLevelEl.innerText = report.insights.risk_level;
+            riskLevelEl.className = `ml-2 text-sm font-bold ${riskColorMap[report.insights.risk_level] || 'text-white'}`;
+
+            const pros = report.insights.pros.map((item) => `<li class="text-green-300">+ ${item}</li>`);
+            const cons = report.insights.cons.map((item) => `<li class="text-red-300">- ${item}</li>`);
+            document.getElementById('pros-cons-list').innerHTML = [...pros, ...cons].join('');
+        }
+
+        function renderAnalysisError(error) {
+            analysisPanel.classList.remove('hidden');
+            document.getElementById('insight-summary').innerText = 'Analysis is temporarily unavailable.';
+            document.getElementById('health-score-val').innerText = '--';
+            document.getElementById('health-score-val').className = 'text-4xl font-bold font-mono text-gray-400';
+            document.getElementById('health-action').innerText = 'UNAVAILABLE';
+            document.getElementById('health-action').className = 'text-sm font-bold mt-1 px-2 py-1 rounded bg-gray-700 text-gray-300';
+            document.getElementById('trend-grid').innerHTML = '';
+            document.getElementById('ind-rsi').innerText = '--';
+            document.getElementById('ind-macd').innerText = '--';
+            document.getElementById('ind-sma').innerText = '--';
+            document.getElementById('risk-level').innerText = '--';
+            document.getElementById('risk-level').className = 'ml-2 text-sm font-bold text-gray-400';
+            document.getElementById('pros-cons-list').innerHTML = `<li class="text-yellow-300">${error.message}</li>`;
+        }
+
+        selectStock(selectedStock);
+    </script>
+</body>
+</html>
